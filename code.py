@@ -13,6 +13,7 @@ import adafruit_requests
 from micropython import const
 from adafruit_pm25.uart import PM25_UART
 from adafruit_io.adafruit_io import IO_HTTP
+
 try:
     from secrets import secrets
 except ImportError:
@@ -91,25 +92,63 @@ def setRGBbyPM(aqdata):
     else:
         setRGB(RED)
         setFans(1)
+        
+def ctof(degrees):
+    return (degrees * (9.0 / 5.0)) + 32
 
 def printData():
+    scd_temp_meta = {
+        'sensor': 'scd41',
+        'units': 'fahrenheit',
+    }
+    scd_humidity_meta = {
+        'sensor': 'scd41',
+        'units': 'rh',
+    }
+    scd_co2_meta = {
+        'sensor': 'scd41',
+        'units': 'ppm',
+    }
     if scd4x.data_ready:
+        scd4xtemp = ctof(scd4x.temperature)
         print("CO2: %d ppm" % scd4x.CO2)
-        print("Temperature: %0.1f *C" % scd4x.temperature)
+        print("Temperature: %0.1f *F" % scd4xtemp)
         print("Humidity: %0.1f %%" % scd4x.relative_humidity)
         print()
+        aio.send_data(temperature_feed_scd["key"], scd4xtemp, scd_temp_meta)
+        aio.send_data(humidity_feed["key"], scd4x.relative_humidity, scd_humidity_meta)
+        aio.send_data(co2_feed["key"], scd4x.CO2, scd_co2_meta)
+        
     else:
         print("SCD4X Data not ready!")
 
-    print("\nTemperature: %0.1f C" % bmp180.temperature)
+    bmp_temp_meta = {
+        'sensor': 'bmp180',
+        'units': 'fahrenheit',
+    }
+    bmp_pressure_meta = {
+        'sensor': 'bmp180',
+        'units': 'hPa',
+    }
+    bmptemp = ctof(bmp180.temperature)
+    print("\nTemperature: %0.1f F" % bmptemp)
     print("Pressure: %0.1f hPa" % bmp180.pressure)
     print("Altitude = %0.2f meters" % bmp180.altitude)
-
+    aio.send_data(temperature_feed_bmp["key"], bmptemp, bmp_temp_meta)
+    aio.send_data(pressure_feed["key"], bmp180.pressure, bmp_pressure_meta)
+    
     try:
         aqdata = pm25.read()
         printaqdata(aqdata)
         setRGBbyPM(aqdata)
-    except RuntimeError:
+        pm_meta = {
+            'sensor': 'PMS7003',
+            'units': 'ppm',
+        }
+        aio.send_data(pm25_feed["key"], aqdata["pm25 standard"], pm_meta)
+        aio.send_data(pm10_feed["key"], aqdata["pm100 standard"], pm_meta)
+    except RuntimeError as ex:
+        print(ex)
         print("Unable to read from sensor, retrying...")
 
 i2c = board.I2C()
@@ -141,30 +180,26 @@ print("Connected to %s!"%secrets["ssid"])
 pool = socketpool.SocketPool(wifi.radio)
 requests = adafruit_requests.Session(pool, ssl.create_default_context())
 
-adafruitIO = IO_HTTP(secrets["ADAFRUIT_IO_USERNAME"], secrets["ADAFRUIT_IO_KEY"], requests)
-
-#print("My IP address is", wifi.radio.ipv4_address)
-#ipv4 = ipaddress.ip_address("8.8.4.4")
-#print("Ping google.com: %f ms" % (wifi.radio.ping(ipv4)*1000))
-
-
-#print("Fetching text from", TEXT_URL)
-#response = requests.get(TEXT_URL)
-#print("-" * 40)
-#print(response.text)
-#print("-" * 40)
+aio = IO_HTTP(secrets["ADAFRUIT_IO_USERNAME"], secrets["ADAFRUIT_IO_KEY"], requests)
 
 location_id = 2552
 
 print("Getting forecast from IO...")
 # Fetch the specified record with current weather
 # and all available forecast information.
-forecast = adafruitIO.receive_weather(location_id)
+forecast = aio.receive_weather(location_id)
 # Get today's forecast
 current_forecast = forecast["current"]
 lastTime = time.monotonic()
 
-
+#temperature_feed = aio.get_feed('dusty.temperature')
+temperature_feed_bmp = aio.get_feed('dusty.temperature-bmp180')
+temperature_feed_scd = aio.get_feed('dusty.temperature-scd41')
+pressure_feed = aio.get_feed('dusty.pressure')
+co2_feed = aio.get_feed('dusty.co2')
+humidity_feed = aio.get_feed('dusty.humidity')
+pm25_feed = aio.get_feed('dusty.pm25')
+pm10_feed = aio.get_feed('dusty.pm10')
 
 while True:
     if time.monotonic() - lastTime >= 30:
