@@ -34,6 +34,58 @@ class Color:
 class Business:
     reset_pin = None
 
+    def __init__(self):
+        self.fanspwm = tuple([pwmio.PWMOut(pin, frequency=25*(10**3)) for pin in [board.MISO, board.A0]])
+        for i in range(90):
+            time.sleep(0.05)
+            self.setFans(i / 100.0)
+        i2c = board.I2C()
+        self.scd4x = adafruit_scd4x.SCD4X(i2c)
+        print("SCD4X Serial number:", [hex(i) for i in self.scd4x.serial_number])
+        self.scd4x.start_periodic_measurement()
+
+        self.bmp180 = adafruit_bmp180.Adafruit_BMP180_I2C(i2c)
+        self.bmp180.sea_level_pressure = 1013.25 # TODO: Can I use this for updated local weather from the internet? or what?
+
+        self.rgbLed = tuple([pwmio.PWMOut(led) for led in [board.SCK, board.A3, board.A2]])
+        for led in self.rgbLed:
+            led.duty_cycle = 2**12-1
+        time.sleep(0.4)
+        uart = busio.UART(board.TX, board.RX, baudrate=9600)
+        self.pm25 = PM25_UART(uart, self.reset_pin)
+        print("Found PM2.5 sensor, reading data...")
+
+        
+
+        print("Available WiFi networks:")
+        for network in wifi.radio.start_scanning_networks():
+            print("\t%s\t\tRSSI: %d\tChannel: %d" % (str(network.ssid, "utf-8"),
+                    network.rssi, network.channel))
+        wifi.radio.stop_scanning_networks()
+        print("Connecting to %s"%secrets["ssid"])
+        # TODO: Add retry limit and graceful failure of missing network
+        found = False
+        while not found:
+            try:
+                wifi.radio.connect(secrets["ssid"], secrets["password"])
+                print("Connected to %s!"%secrets["ssid"])
+                found = True
+            except ConnectionError:
+                print("Retrying")
+                time.sleep(5)
+        pool = socketpool.SocketPool(wifi.radio)
+        requests = adafruit_requests.Session(pool, ssl.create_default_context())
+
+        self.aio = IO_HTTP(secrets["ADAFRUIT_IO_USERNAME"], secrets["ADAFRUIT_IO_KEY"], requests)
+
+        self.temperature_feed_bmp = self.aio.get_feed('dusty.temperature-bmp180')
+        self.temperature_feed_scd = self.aio.get_feed('dusty.temperature-scd41')
+        self.pressure_feed = self.aio.get_feed('dusty.pressure')
+        self.co2_feed = self.aio.get_feed('dusty.co2')
+        self.humidity_feed = self.aio.get_feed('dusty.humidity')
+        self.pm25_feed = self.aio.get_feed('dusty.pm25')
+        self.pm10_feed = self.aio.get_feed('dusty.pm10')
+
     def setFanPWM(self, percent, pin):
         if percent > 1 or percent < 0:
             print("ERROR! percent must be between 0 and 1")
@@ -150,47 +202,7 @@ class Business:
             print("Unable to read from sensor, retrying...")
 
     def run(self):
-        i2c = board.I2C()
-        self.scd4x = adafruit_scd4x.SCD4X(i2c)
-        print("SCD4X Serial number:", [hex(i) for i in self.scd4x.serial_number])
-        self.scd4x.start_periodic_measurement()
-
-        self.bmp180 = adafruit_bmp180.Adafruit_BMP180_I2C(i2c)
-        self.bmp180.sea_level_pressure = 1013.25 # TODO: Can I use this for updated local weather from the internet? or what?
-
-        self.rgbLed = tuple([pwmio.PWMOut(led) for led in [board.SCK, board.A3, board.A2]])
-        for led in self.rgbLed:
-            led.duty_cycle = 2**12-1
-        time.sleep(0.4)
-        uart = busio.UART(board.TX, board.RX, baudrate=9600)
-        self.pm25 = PM25_UART(uart, self.reset_pin)
-        print("Found PM2.5 sensor, reading data...")
-
-        self.fanspwm = tuple([pwmio.PWMOut(pin, frequency=25*(10**3)) for pin in [board.MISO, board.A0]])
-
-        print("Available WiFi networks:")
-        for network in wifi.radio.start_scanning_networks():
-            print("\t%s\t\tRSSI: %d\tChannel: %d" % (str(network.ssid, "utf-8"),
-                    network.rssi, network.channel))
-        wifi.radio.stop_scanning_networks()
-        print("Connecting to %s"%secrets["ssid"])
-        wifi.radio.connect(secrets["ssid"], secrets["password"])
-        print("Connected to %s!"%secrets["ssid"])
-        pool = socketpool.SocketPool(wifi.radio)
-        requests = adafruit_requests.Session(pool, ssl.create_default_context())
-
-        self.aio = IO_HTTP(secrets["ADAFRUIT_IO_USERNAME"], secrets["ADAFRUIT_IO_KEY"], requests)
-
         lastTime = time.monotonic() - 10000
-
-        self.temperature_feed_bmp = self.aio.get_feed('dusty.temperature-bmp180')
-        self.temperature_feed_scd = self.aio.get_feed('dusty.temperature-scd41')
-        self.pressure_feed = self.aio.get_feed('dusty.pressure')
-        self.co2_feed = self.aio.get_feed('dusty.co2')
-        self.humidity_feed = self.aio.get_feed('dusty.humidity')
-        self.pm25_feed = self.aio.get_feed('dusty.pm25')
-        self.pm10_feed = self.aio.get_feed('dusty.pm10')
-
         while True:
             if time.monotonic() - lastTime >= 30:
                 lastTime = time.monotonic()
