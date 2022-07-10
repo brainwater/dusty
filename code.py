@@ -11,6 +11,8 @@ import wifi
 import socketpool
 import adafruit_requests
 from micropython import const
+#from rainbowio import colorwheel
+import neopixel
 from adafruit_pm25.uart import PM25_UART
 from adafruit_io.adafruit_io import IO_HTTP
 
@@ -24,13 +26,12 @@ except ImportError:
 
 
 class Color:
-    RED = (1, 0, 0)
-    GREEN = (0, 1, 0)
-    BLUE = (0, 0, 1)
+    RED = (255, 0, 0)
+    GREEN = (0, 255, 0)
+    BLUE = (0, 0, 255)
     OFF = (0, 0, 0)
 
-    YELLOW = (1, 0.4, 0)
-
+    YELLOW = (255, 102, 0)
 
 class Business:
     reset_pin = None
@@ -40,6 +41,8 @@ class Business:
     def __init__(self):
         self.fanspwm = tuple([pwmio.PWMOut(pin, frequency=25*(10**3)) for pin in [board.MISO, board.A0]])
         self.rgbLed = tuple([pwmio.PWMOut(led) for led in [board.SCK, board.A3, board.A2]])
+        self.pixels = neopixel.NeoPixel(board.SDA, 7, brightness=0.05)
+        self.pixels.fill(Color.BLUE)
         for led in self.rgbLed:
             led.duty_cycle = 2**12-1
         self._initialize()
@@ -51,13 +54,13 @@ class Business:
             self.setFans(i / 100.0)
     
     def _initBMP(self):
-        i2c = board.I2C()
+        i2c = board.STEMMA_I2C()
         self.bmp180 = adafruit_bmp180.Adafruit_BMP180_I2C(i2c)
         self.bmp180.sea_level_pressure = 1013.25 # TODO: Can I use this for updated local weather from the internet? or what?
         print("Initialized BMP180 pressure and temperature sensor")
     
     def _initSCD4X(self):
-        i2c = board.I2C()
+        i2c = board.STEMMA_I2C()
         self.scd4x = adafruit_scd4x.SCD4X(i2c)
         print("SCD4X Serial number:", [hex(i) for i in self.scd4x.serial_number])
         self.scd4x.start_periodic_measurement()
@@ -133,7 +136,8 @@ class Business:
 
     def setRGB(self, rgbValue, percent=0.1):
         for led, val in zip(self.rgbLed, rgbValue):
-            led.duty_cycle = int((2**16-1) * percent * val)
+            led.duty_cycle = int((2**16-1) * percent * val / 256.0)
+        self.pixels.fill(rgbValue)
 
     def printaqdata(self, aqdata):
         print()
