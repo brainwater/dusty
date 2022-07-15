@@ -27,6 +27,7 @@ except ImportError:
 
 class Color:
     RED = (255, 0, 0)
+    LIGHT_RED = (100, 0, 0)
     GREEN = (0, 255, 0)
     BLUE = (0, 0, 255)
     OFF = (0, 0, 0)
@@ -37,6 +38,9 @@ class Business:
     reset_pin = None
     GREEN_PM_10 = 5
     YELLOW_PM_10 = 15
+    GREEN_CO2 = 600
+    YELLOW_CO2 = 1000
+    RED_CO2 = 1400
 
     def __init__(self):
         self.fanspwm = tuple([pwmio.PWMOut(pin, frequency=25*(10**3)) for pin in [board.MISO, board.A0]])
@@ -121,11 +125,11 @@ class Business:
 
     def errorState(self):
         while True:
-            self.setRGB(Color.YELLOW, 1.0)
+            self.setRGBParticulates(Color.YELLOW, 1.0)
             time.sleep(0.5)
-            self.setRGB(Color.RED, 1.0)
+            self.setRGBParticulates(Color.RED, 1.0)
             time.sleep(0.5)
-            self.setRGB(Color.OFF, 0.0)
+            self.setRGBParticulates(Color.OFF, 0.0)
             time.sleep(0.5)
     
     def setFanPWM(self, percent, pin):
@@ -134,10 +138,13 @@ class Business:
             return
         pin.duty_cycle = int(percent*(2**16-1))
 
-    def setRGB(self, rgbValue, percent=0.1):
+    def setRGBParticulates(self, rgbValue, percent=0.1):
         for led, val in zip(self.rgbLed, rgbValue):
             led.duty_cycle = int((2**16-1) * percent * val / 256.0)
-        self.pixels.fill(rgbValue)
+        self.pixels[0] = rgbValue
+        
+    def setRGBCO2(self, rgbValue):
+        self.pixels[1] = rgbValue
 
     def printaqdata(self, aqdata):
         print()
@@ -167,14 +174,24 @@ class Business:
     def setRGBbyPM(self, aqdata):
         pm10val = aqdata["pm100 standard"]
         if pm10val < self.GREEN_PM_10:
-            self.setRGB(Color.GREEN)
+            self.setRGBParticulates(Color.GREEN)
             self.setFans(0.1)
         elif pm10val < self.YELLOW_PM_10:
-            self.setRGB(Color.YELLOW)
+            self.setRGBParticulates(Color.YELLOW)
             self.setFans(0.6)
         else:
-            self.setRGB(Color.RED)
+            self.setRGBParticulates(Color.RED)
             self.setFans(1)
+    
+    def setRGBbyCO2(self, co2ppm):
+        if co2ppm < self.GREEN_CO2:
+            self.setRGBCO2(Color.GREEN)
+        elif co2ppm < self.YELLOW_CO2:
+            self.setRGBCO2(Color.YELLOW)
+        elif co2ppm < self.RED_CO2:
+            self.setRGBCO2(Color.LIGHT_RED)
+        else:
+            self.setRGBCO2(Color.RED)
     
     def ctof(self, degrees):
         return (degrees * (9.0 / 5.0)) + 32
@@ -194,6 +211,7 @@ class Business:
         }
         if self.scd4x.data_ready:
             scd4xtemp = self.ctof(self.scd4x.temperature)
+            self.setRGBbyCO2(self.scd4x.CO2)
             print("CO2: %d ppm" % self.scd4x.CO2)
             print("Temperature: %0.1f *F" % scd4xtemp)
             print("Humidity: %0.1f %%" % self.scd4x.relative_humidity)
