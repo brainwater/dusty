@@ -3,8 +3,6 @@ import digitalio
 import pwmio
 import time
 import busio
-import adafruit_scd4x
-import adafruit_bmp180
 import ipaddress
 import ssl
 import wifi
@@ -15,7 +13,13 @@ from micropython import const
 import neopixel
 from adafruit_pm25.uart import PM25_UART
 from adafruit_io.adafruit_io import IO_HTTP
-
+import adafruit_scd4x
+import adafruit_ssd1306
+IS5 = True
+if not IS5:
+    import adafruit_bmp180
+else:
+    import adafruit_bmp280
 try:
     from secrets import secrets
 except ImportError:
@@ -23,8 +27,6 @@ except ImportError:
     raise
 # A0 and MI are PWM
 # A1 and MO are tachometer
-
-
 class Color:
     RED = (255, 0, 0)
     LIGHT_RED = (100, 0, 0)
@@ -43,12 +45,27 @@ class Business:
     RED_CO2 = 1400
 
     def __init__(self):
-        self.fanspwm = tuple([pwmio.PWMOut(pin, frequency=25*(10**3)) for pin in [board.MISO, board.A0]])
-        self.rgbLed = tuple([pwmio.PWMOut(led) for led in [board.SCK, board.A3, board.A2]])
-        self.pixels = neopixel.NeoPixel(board.SDA, 7, brightness=0.05)
+        print("STarting")
+        i2c = board.STEMMA_I2C()
+        while not i2c.try_lock():
+            print("Trying!")
+            time.sleep(0.1)
+            pass
+        try:
+            print([hex(device_address) for device_address in i2c.scan()])
+        finally:
+            i2c.unlock()
+        if not IS5:
+            self.fanspwm = tuple([pwmio.PWMOut(pin, frequency=25*(10**3)) for pin in [board.MISO, board.A0]])
+            self.rgbLed = tuple([pwmio.PWMOut(led) for led in [board.SCK, board.A3, board.A2]])
+            self.pixels = neopixel.NeoPixel(board.SDA, 7, brightness=0.05)
+            for led in self.rgbLed:
+                led.duty_cycle = 2**12-1
+        else:
+            self.fanspwm = tuple([pwmio.PWMOut(pin, frequency=25*(10**3)) for pin in [board.A0, board.A1]])
+            self.pixels = neopixel.NeoPixel(board.NEOPIXEL, 7, brightness=0.05)
         self.pixels.fill(Color.BLUE)
-        for led in self.rgbLed:
-            led.duty_cycle = 2**12-1
+        
         self._initialize()
     
     # Used to prevent intermittent voltage drop on startup that resets board
@@ -57,20 +74,44 @@ class Business:
             time.sleep(0.05)
             self.setFans(i / 100.0)
     
-    def _initBMP(self):
+    def _initOLED(self):
+        print("Initializing OLED")
         i2c = board.STEMMA_I2C()
-        self.bmp180 = adafruit_bmp180.Adafruit_BMP180_I2C(i2c)
-        self.bmp180.sea_level_pressure = 1013.25 # TODO: Can I use this for updated local weather from the internet? or what?
+        self.oled = adafruit_ssd1306.SSD1306_I2C(128, 64, i2c, addr=0x3C)
+        oled = self.oled
+        oled.rotation = 2
+        oled.fill(0)
+        oled.text('Hello', 0, 0, 1)
+        oled.text('World', 0, 10, 1)
+        oled.show()
+        """self.oled.fill(1)
+        self.oled.show()
+        time.sleep(5)
+        self.oled.fill(0)
+        self.oled.show()"""
+
+    def _initBMP(self):
+        print("Initializing BMP")
+        i2c = board.STEMMA_I2C()
+        if not IS5:
+            self.bmp180 = adafruit_bmp180.Adafruit_BMP180_I2C(i2c)
+        else:
+            self.bmp180 = adafruit_bmp280.Adafruit_BMP280_I2C(i2c, 0x76)
+        self.bmp180.sea_level_pressure = 1013.25# TODO: Can I use this for updated local weather from the internet? or what?
         print("Initialized BMP180 pressure and temperature sensor")
     
     def _initSCD4X(self):
+        print("Blarg")
+        print("Initializing SCD4X")
         i2c = board.STEMMA_I2C()
+
         self.scd4x = adafruit_scd4x.SCD4X(i2c)
         print("SCD4X Serial number:", [hex(i) for i in self.scd4x.serial_number])
         self.scd4x.start_periodic_measurement()
         print("Initalized SCD4X CO2 Sensor")
     
     def _initPM25(self):
+        print("Initializing PM25")
         uart = busio.UART(board.TX, board.RX, baudrate=9600)
         self.pm25 = PM25_UART(uart, self.reset_pin)
         print("Found PM2.5 sensor, reading data...")
@@ -118,6 +159,8 @@ class Business:
         self._spinFansUp()
         self._criticalFun(self._initSCD4X)
         self._criticalFun(self._initBMP)
+        if IS5:
+            self._initOLED()
         time.sleep(0.4)
         self._criticalFun(self._initPM25)
         self._criticalFun(self._initNetwork)
@@ -139,9 +182,11 @@ class Business:
         pin.duty_cycle = int(percent*(2**16-1))
 
     def setRGBParticulates(self, rgbValue, percent=0.1):
+        self.pixels[0] = rgbValue
+        if IS5:
+            return
         for led, val in zip(self.rgbLed, rgbValue):
             led.duty_cycle = int((2**16-1) * percent * val / 256.0)
-        self.pixels[0] = rgbValue
         
     def setRGBCO2(self, rgbValue):
         self.pixels[1] = rgbValue
