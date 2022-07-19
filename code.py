@@ -43,6 +43,13 @@ class Business:
     GREEN_CO2 = 600
     YELLOW_CO2 = 1000
     RED_CO2 = 1400
+    lastValues = {
+        'CO2': -1,
+        'humidity': -1.0,
+        'scd4xtemp': -1.0,
+        'pressure': -1,
+        'particulates': -1
+    }
 
     def __init__(self):
         print("STarting")
@@ -73,7 +80,21 @@ class Business:
         for i in range(90):
             time.sleep(0.05)
             self.setFans(i / 100.0)
-    
+
+    def textOLED(self, text):
+        self.oled.fill(0)
+        self.oled.text(text)
+        self.oled.show()
+
+    def displayOLED(self):
+        self.oled.fill(0)
+        self.oled.text("CO2:  %d ppm" % (self.lastValues['CO2'],), 0, 0, 1)
+        self.oled.text("PM10: %d ppm" % (self.lastValues['particulates'],), 0, 10, 1)
+        self.oled.text("Temp: %d F" % (self.lastValues['scd4xtemp'],), 0, 20, 1)
+        self.oled.text("Humi: %d %%" % (self.lastValues['humidity'],), 0, 30, 1)
+        self.oled.text("Pres: %d hPa" % (self.lastValues['pressure'],), 0, 40, 1)
+        self.oled.show()
+        
     def _initOLED(self):
         print("Initializing OLED")
         i2c = board.STEMMA_I2C()
@@ -84,11 +105,6 @@ class Business:
         oled.text('Hello', 0, 0, 1)
         oled.text('World', 0, 10, 1)
         oled.show()
-        """self.oled.fill(1)
-        self.oled.show()
-        time.sleep(5)
-        self.oled.fill(0)
-        self.oled.show()"""
 
     def _initBMP(self):
         print("Initializing BMP")
@@ -187,7 +203,7 @@ class Business:
             return
         for led, val in zip(self.rgbLed, rgbValue):
             led.duty_cycle = int((2**16-1) * percent * val / 256.0)
-        
+
     def setRGBCO2(self, rgbValue):
         self.pixels[1] = rgbValue
 
@@ -256,6 +272,9 @@ class Business:
         }
         if self.scd4x.data_ready:
             scd4xtemp = self.ctof(self.scd4x.temperature)
+            self.lastValues['scd4xtemp'] = scd4xtemp
+            self.lastValues['CO2'] = self.scd4x.CO2
+            self.lastValues['humidity'] = self.scd4x.relative_humidity
             self.setRGBbyCO2(self.scd4x.CO2)
             print("CO2: %d ppm" % self.scd4x.CO2)
             print("Temperature: %0.1f *F" % scd4xtemp)
@@ -278,6 +297,8 @@ class Business:
             'units': 'hPa',
         }
         bmptemp = self.ctof(self.bmp180.temperature)
+        self.lastValues['bmptemp'] = bmptemp
+        self.lastValues['pressure'] = self.bmp180.pressure
         print("\nTemperature: %0.1f F" % bmptemp)
         print("Pressure: %0.1f hPa" % self.bmp180.pressure)
         print("Altitude = %0.2f meters" % self.bmp180.altitude)
@@ -286,6 +307,8 @@ class Business:
     
     def _printPM25(self):
         aqdata = self.pm25.read()
+        self.lastValues['aqdata'] = aqdata
+        self.lastValues['particulates'] = aqdata['pm100 standard']
         self.printaqdata(aqdata)
         self.setRGBbyPM(aqdata)
         pm_meta = {
@@ -306,6 +329,7 @@ class Business:
         self._noncriticalFun(self._printSCD)
         self._noncriticalFun(self._printBMP)
         self._noncriticalFun(self._printPM25)
+        self._noncriticalFun(self.displayOLED)
 
     def run(self):
         lastTime = time.monotonic() - 10000
