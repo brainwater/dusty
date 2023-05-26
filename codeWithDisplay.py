@@ -3,21 +3,23 @@ import digitalio
 import pwmio
 import time
 import busio
-import adafruit_scd4x
-import adafruit_bmp180
 import ipaddress
 import ssl
 import wifi
 import socketpool
 import adafruit_requests
-import adafruit_minimqtt.adafruit_minimqtt as MQTT
-import json
 from micropython import const
 #from rainbowio import colorwheel
 import neopixel
 from adafruit_pm25.uart import PM25_UART
 from adafruit_io.adafruit_io import IO_HTTP
-
+import adafruit_scd4x
+import adafruit_ssd1306
+IS5 = True
+if not IS5:
+    import adafruit_bmp180
+else:
+    import adafruit_bmp280
 try:
     from secrets import secrets
 except ImportError:
@@ -25,8 +27,6 @@ except ImportError:
     raise
 # A0 and MI are PWM
 # A1 and MO are tachometer
-
-
 class Color:
     RED = (255, 0, 0)
     LIGHT_RED = (100, 0, 0)
@@ -43,40 +43,95 @@ class Business:
     GREEN_CO2 = 600
     YELLOW_CO2 = 1000
     RED_CO2 = 1400
+    lastValues = {
+        'CO2': -1,
+        'humidity': -1.0,
+        'scd4xtemp': -1.0,
+        'pressure': -1,
+        'particulates': -1
+    }
 
     def __init__(self):
-        self.fanspwm = tuple([pwmio.PWMOut(pin, frequency=25*(10**3)) for pin in [board.MISO, board.A0]])
-        self.rgbLed = tuple([pwmio.PWMOut(led) for led in [board.SCK, board.A3, board.A2]])
-        self.pixels = neopixel.NeoPixel(board.SDA, 7, brightness=0.05)
+        print("STarting")
+        i2c = board.STEMMA_I2C()
+        while not i2c.try_lock():
+            print("Trying!")
+            time.sleep(0.1)
+            pass
+        try:
+            print([hex(device_address) for device_address in i2c.scan()])
+        finally:
+            i2c.unlock()
+        if not IS5:
+            self.fanspwm = tuple([pwmio.PWMOut(pin, frequency=25*(10**3)) for pin in [board.MISO, board.A0]])
+            self.rgbLed = tuple([pwmio.PWMOut(led) for led in [board.SCK, board.A3, board.A2]])
+            self.pixels = neopixel.NeoPixel(board.SDA, 7, brightness=0.05)
+            for led in self.rgbLed:
+                led.duty_cycle = 2**12-1
+        else:
+            self.fanspwm = tuple([pwmio.PWMOut(pin, frequency=25*(10**3)) for pin in [board.A0, board.A1]])
+            self.pixels = neopixel.NeoPixel(board.NEOPIXEL, 7, brightness=0.05)
         self.pixels.fill(Color.BLUE)
-        for led in self.rgbLed:
-            led.duty_cycle = 2**12-1
+        
         self._initialize()
-
+    
     # Used to prevent intermittent voltage drop on startup that resets board
     def _spinFansUp(self):
         for i in range(90):
             time.sleep(0.05)
             self.setFans(i / 100.0)
 
-    def _initBMP(self):
-        i2c = board.STEMMA_I2C()
-        self.bmp180 = adafruit_bmp180.Adafruit_BMP180_I2C(i2c)
-        self.bmp180.sea_level_pressure = 1013.25 # TODO: Can I use this for updated local weather from the internet? or what?
-        print("Initialized BMP180 pressure and temperature sensor")
+    def textOLED(self, text):
+        self.oled.fill(0)
+        self.oled.text(text)
+        self.oled.show()
 
-    def _initSCD4X(self):
+    def displayOLED(self):
+        self.oled.fill(0)
+        self.oled.text("CO2:  %d ppm" % (self.lastValues['CO2'],), 0, 0, 1)
+        self.oled.text("PM10: %d ppm" % (self.lastValues['particulates'],), 0, 10, 1)
+        self.oled.text("Temp: %d F" % (self.lastValues['scd4xtemp'],), 0, 20, 1)
+        self.oled.text("Humi: %d %%" % (self.lastValues['humidity'],), 0, 30, 1)
+        self.oled.text("Pres: %d hPa" % (self.lastValues['pressure'],), 0, 40, 1)
+        self.oled.show()
+        
+    def _initOLED(self):
+        print("Initializing OLED")
         i2c = board.STEMMA_I2C()
+        self.oled = adafruit_ssd1306.SSD1306_I2C(128, 64, i2c, addr=0x3C)
+        oled = self.oled
+        oled.rotation = 2
+        oled.fill(0)
+        oled.text('Hello', 0, 0, 1)
+        oled.text('World', 0, 10, 1)
+        oled.show()
+
+    def _initBMP(self):
+        print("Initializing BMP")
+        i2c = board.STEMMA_I2C()
+        if not IS5:
+            self.bmp180 = adafruit_bmp180.Adafruit_BMP180_I2C(i2c)
+        else:
+            self.bmp180 = adafruit_bmp280.Adafruit_BMP280_I2C(i2c, 0x76)
+        self.bmp180.sea_level_pressure = 1013.25# TODO: Can I use this for updated local weather from the internet? or what?
+        print("Initialized BMP180 pressure and temperature sensor")
+    
+    def _initSCD4X(self):
+        print("Blarg")
+        print("Initializing SCD4X")
+        i2c = board.STEMMA_I2C()
+
         self.scd4x = adafruit_scd4x.SCD4X(i2c)
         print("SCD4X Serial number:", [hex(i) for i in self.scd4x.serial_number])
         self.scd4x.start_periodic_measurement()
         print("Initalized SCD4X CO2 Sensor")
-
+    
     def _initPM25(self):
+        print("Initializing PM25")
         uart = busio.UART(board.TX, board.RX, baudrate=9600)
         self.pm25 = PM25_UART(uart, self.reset_pin)
         print("Found PM2.5 sensor, reading data...")
-
+    
     def _initNetwork(self):
         for network in wifi.radio.start_scanning_networks():
             print("\t%s\t\tRSSI: %d\tChannel: %d" % (str(network.ssid, "utf-8"),
@@ -95,54 +150,10 @@ class Business:
                 time.sleep(5)
         pool = socketpool.SocketPool(wifi.radio)
         requests = adafruit_requests.Session(pool, ssl.create_default_context())
-        self.mqtt_client = MQTT.MQTT(
-            broker=secrets["mqtt_broker"],
-            port=secrets["mqtt_port"],
-            username=secrets["mqtt_username"],
-            password=secrets["mqtt_password"],
-            socket_pool=pool,
-            ssl_context=ssl.create_default_context(),
-        )
-        print("Attempting to connect to %s" % self.mqtt_client.broker)
-        self.mqtt_client.connect()
+
         self.aio = IO_HTTP(secrets["ADAFRUIT_IO_USERNAME"], secrets["ADAFRUIT_IO_KEY"], requests)
-
-    def _initSensor(self, device_class: str, prefix: str, unit_of_measurement: str):
-        prefix = prefix.lower().strip()
-        prefix_up = prefix[:1].upper() + prefix[1:] # str.capitalize() doesn't exist here for some reason
-        device_class = device_class.lower().strip()
-        device_class_up = device_class[:1].upper() + device_class[1:]
-        payload = {
-            "name": prefix_up + " " + device_class_up,
-            "device_class": device_class,
-            "state_topic": "homeassistant/sensor/" + prefix + device_class + "/state",
-            "unit_of_measurement": unit_of_measurement,
-            "payload_available": "online",
-            "payload_not_available": "offline",
-            "unique_id": prefix + device_class + "gauge",
-            "suggested_display_precision": "1",
-            "value_template": "{{ value_json." + device_class + " | round(1) }}"
-        }
-        topic = "homeassistant/sensor/" + prefix + device_class + "/config"
-        self.mqtt_client.publish(topic, json.dumps(payload))
-
-    def _publishSensor(self, device_class: str, prefix: str, value):
-        prefix = prefix.lower().strip()
-        device_class = device_class.lower().strip()
-        topic = "homeassistant/sensor/" + prefix + device_class + "/state"
-        output = {
-            device_class: value
-        }
-        self.mqtt_client.publish(topic, json.dumps(output))
-
+    
     def _initFeeds(self):
-        self._initSensor("temperature", "dustybmp180", "°F")
-        self._initSensor("temperature", "dustyscd41", "°F")
-        self._initSensor("humidity", "dusty", "%rH")
-        self._initSensor("pressure", "dusty", "hPa")
-        self._initSensor("carbon_dioxide", "dusty", "ppm")
-        self._initSensor("pm25", "dusty", "ppm")
-        self._initSensor("pm10", "dusty", "ppm")
         self.temperature_feed_bmp = self.aio.get_feed('dusty.temperature-bmp180')
         self.temperature_feed_scd = self.aio.get_feed('dusty.temperature-scd41')
         self.pressure_feed = self.aio.get_feed('dusty.pressure')
@@ -150,7 +161,7 @@ class Business:
         self.humidity_feed = self.aio.get_feed('dusty.humidity')
         self.pm25_feed = self.aio.get_feed('dusty.pm25')
         self.pm10_feed = self.aio.get_feed('dusty.pm10')
-
+    
     def _criticalFun(self, fun, error="ERROR In Critical Function"):
         try:
             fun()
@@ -160,11 +171,12 @@ class Business:
             print(ex)
             print(dir(ex))
             self.errorState()
-
     def _initialize(self):
         self._spinFansUp()
         self._criticalFun(self._initSCD4X)
         self._criticalFun(self._initBMP)
+        if IS5:
+            self._initOLED()
         time.sleep(0.4)
         self._criticalFun(self._initPM25)
         self._criticalFun(self._initNetwork)
@@ -178,7 +190,7 @@ class Business:
             time.sleep(0.5)
             self.setRGBParticulates(Color.OFF, 0.0)
             time.sleep(0.5)
-
+    
     def setFanPWM(self, percent, pin):
         if percent > 1 or percent < 0:
             print("ERROR! percent must be between 0 and 1")
@@ -186,9 +198,11 @@ class Business:
         pin.duty_cycle = int(percent*(2**16-1))
 
     def setRGBParticulates(self, rgbValue, percent=0.1):
+        self.pixels[0] = rgbValue
+        if IS5:
+            return
         for led, val in zip(self.rgbLed, rgbValue):
             led.duty_cycle = int((2**16-1) * percent * val / 256.0)
-        self.pixels[0] = rgbValue
 
     def setRGBCO2(self, rgbValue):
         self.pixels[1] = rgbValue
@@ -229,7 +243,7 @@ class Business:
         else:
             self.setRGBParticulates(Color.RED)
             self.setFans(1)
-
+    
     def setRGBbyCO2(self, co2ppm):
         if co2ppm < self.GREEN_CO2:
             self.setRGBCO2(Color.GREEN)
@@ -239,10 +253,10 @@ class Business:
             self.setRGBCO2(Color.LIGHT_RED)
         else:
             self.setRGBCO2(Color.RED)
-
+    
     def ctof(self, degrees):
         return (degrees * (9.0 / 5.0)) + 32
-
+    
     def _printSCD(self):
         scd_temp_meta = {
             'sensor': 'scd41',
@@ -258,21 +272,21 @@ class Business:
         }
         if self.scd4x.data_ready:
             scd4xtemp = self.ctof(self.scd4x.temperature)
+            self.lastValues['scd4xtemp'] = scd4xtemp
+            self.lastValues['CO2'] = self.scd4x.CO2
+            self.lastValues['humidity'] = self.scd4x.relative_humidity
             self.setRGBbyCO2(self.scd4x.CO2)
             print("CO2: %d ppm" % self.scd4x.CO2)
             print("Temperature: %0.1f *F" % scd4xtemp)
             print("Humidity: %0.1f %%" % self.scd4x.relative_humidity)
             print()
-            self._publishSensor("temperature", "dustyscd41", scd4xtemp)
-            self._publishSensor("humidity", "dusty", self.scd4x.relative_humidity)
-            self._publishSensor("carbon_dioxide", "dusty", self.scd4x.CO2)
             self.aio.send_data(self.temperature_feed_scd["key"], scd4xtemp, scd_temp_meta)
             self.aio.send_data(self.humidity_feed["key"], self.scd4x.relative_humidity, scd_humidity_meta)
             self.aio.send_data(self.co2_feed["key"], self.scd4x.CO2, scd_co2_meta)
         else:
             print("SCD4X Data not ready!")
             self.scd4x.start_periodic_measurement()
-
+    
     def _printBMP(self):
         bmp_temp_meta = {
             'sensor': 'bmp180',
@@ -283,38 +297,39 @@ class Business:
             'units': 'hPa',
         }
         bmptemp = self.ctof(self.bmp180.temperature)
+        self.lastValues['bmptemp'] = bmptemp
+        self.lastValues['pressure'] = self.bmp180.pressure
         print("\nTemperature: %0.1f F" % bmptemp)
         print("Pressure: %0.1f hPa" % self.bmp180.pressure)
         print("Altitude = %0.2f meters" % self.bmp180.altitude)
-        self._publishSensor("temperature", "dustybmp180", bmptemp)
-        self._publishSensor("pressure", "dusty", self.bmp180.pressure)
         self.aio.send_data(self.temperature_feed_bmp["key"], bmptemp, bmp_temp_meta)
         self.aio.send_data(self.pressure_feed["key"], self.bmp180.pressure, bmp_pressure_meta)
-
+    
     def _printPM25(self):
         aqdata = self.pm25.read()
+        self.lastValues['aqdata'] = aqdata
+        self.lastValues['particulates'] = aqdata['pm100 standard']
         self.printaqdata(aqdata)
         self.setRGBbyPM(aqdata)
         pm_meta = {
             'sensor': 'PMS7003',
             'units': 'ppm',
         }
-        self._publishSensor("pm25", "dusty", aqdata["pm25 standard"])
-        self._publishSensor("pm10", "dusty", aqdata["pm100 standard"])
         self.aio.send_data(self.pm25_feed["key"], aqdata["pm25 standard"], pm_meta)
         self.aio.send_data(self.pm10_feed["key"], aqdata["pm100 standard"], pm_meta)
-
+    
     def _noncriticalFun(self, fun):
         try:
             fun()
         except Exception as ex:
             print("Noncritical exception, either a transient fault or a disconnected sensor.")
             print(ex)
-
+    
     def printData(self):
         self._noncriticalFun(self._printSCD)
         self._noncriticalFun(self._printBMP)
         self._noncriticalFun(self._printPM25)
+        self._noncriticalFun(self.displayOLED)
 
     def run(self):
         lastTime = time.monotonic() - 10000
