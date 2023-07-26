@@ -1,18 +1,15 @@
 import board
-import digitalio
 import pwmio
 import time
 import busio
 import adafruit_scd4x
 import adafruit_bmp180
-import ipaddress
 import ssl
 import wifi
 import socketpool
 import adafruit_requests
 import adafruit_minimqtt.adafruit_minimqtt as MQTT
 import json
-from micropython import const
 #from rainbowio import colorwheel
 import neopixel
 from adafruit_pm25.uart import PM25_UART
@@ -108,6 +105,27 @@ class Business:
         self.aio = IO_HTTP(secrets["ADAFRUIT_IO_USERNAME"], secrets["ADAFRUIT_IO_KEY"], requests)
 
     def _initSensor(self, device_class: str, prefix: str, unit_of_measurement: str):
+        """prefix = prefix.lower().strip()
+        prefix_up = prefix[:1].upper() + prefix[1:] # str.capitalize() doesn't exist here for some reason
+        device_class = device_class.lower().strip()
+        device_class_up = device_class[:1].upper() + device_class[1:]
+        payload = {
+            "name": prefix_up + " " + device_class_up,
+            "device_class": device_class,
+            "state_topic": "homeassistant/sensor/" + prefix + device_class + "/state",
+            "unit_of_measurement": unit_of_measurement,
+            "payload_available": "online",
+            "payload_not_available": "offline",
+            "unique_id": prefix + device_class + "gauge",
+            "suggested_display_precision": "1",
+            "value_template": "{{ value_json." + device_class + " | round(1) }}"
+        }
+        topic = "homeassistant/sensor/" + prefix + device_class + "/config"
+        self.mqtt_client.reconnect()
+        self.mqtt_client.publish(topic, json.dumps(payload))"""
+        pass
+
+    def _advertiseSensor(self, device_class: str, prefix: str, unit_of_measurement: str):
         prefix = prefix.lower().strip()
         prefix_up = prefix[:1].upper() + prefix[1:] # str.capitalize() doesn't exist here for some reason
         device_class = device_class.lower().strip()
@@ -124,6 +142,7 @@ class Business:
             "value_template": "{{ value_json." + device_class + " | round(1) }}"
         }
         topic = "homeassistant/sensor/" + prefix + device_class + "/config"
+        self.mqtt_client.reconnect()
         self.mqtt_client.publish(topic, json.dumps(payload))
 
     def _publishSensor(self, device_class: str, prefix: str, value):
@@ -133,6 +152,7 @@ class Business:
         output = {
             device_class: value
         }
+        self.mqtt_client.reconnect()
         self.mqtt_client.publish(topic, json.dumps(output))
 
     def _initFeeds(self):
@@ -263,6 +283,9 @@ class Business:
             print("Temperature: %0.1f *F" % scd4xtemp)
             print("Humidity: %0.1f %%" % self.scd4x.relative_humidity)
             print()
+            self._advertiseSensor("temperature", "dustyscd41", "°F")
+            self._advertiseSensor("humidity", "dusty", "%rH")
+            self._advertiseSensor("carbon_dioxide", "dusty", "ppm")
             self._publishSensor("temperature", "dustyscd41", scd4xtemp)
             self._publishSensor("humidity", "dusty", self.scd4x.relative_humidity)
             self._publishSensor("carbon_dioxide", "dusty", self.scd4x.CO2)
@@ -286,6 +309,8 @@ class Business:
         print("\nTemperature: %0.1f F" % bmptemp)
         print("Pressure: %0.1f hPa" % self.bmp180.pressure)
         print("Altitude = %0.2f meters" % self.bmp180.altitude)
+        self._advertiseSensor("pressure", "dusty", "hPa")
+        self._advertiseSensor("temperature", "dustybmp180", "°F")
         self._publishSensor("temperature", "dustybmp180", bmptemp)
         self._publishSensor("pressure", "dusty", self.bmp180.pressure)
         self.aio.send_data(self.temperature_feed_bmp["key"], bmptemp, bmp_temp_meta)
@@ -299,6 +324,8 @@ class Business:
             'sensor': 'PMS7003',
             'units': 'ppm',
         }
+        self._advertiseSensor("pm25", "dusty", "ppm")
+        self._advertiseSensor("pm10", "dusty", "ppm")
         self._publishSensor("pm25", "dusty", aqdata["pm25 standard"])
         self._publishSensor("pm10", "dusty", aqdata["pm100 standard"])
         self.aio.send_data(self.pm25_feed["key"], aqdata["pm25 standard"], pm_meta)
@@ -322,6 +349,7 @@ class Business:
             if time.monotonic() - lastTime >= 30:
                 lastTime = time.monotonic()
                 self._criticalFun(self.printData)
+            time.sleep(1.0)
 
 
 biz = Business()
